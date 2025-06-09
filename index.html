@@ -1,0 +1,607 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>360° Color Match Tetris</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: #111;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            overflow: hidden;
+            font-family: Arial, sans-serif;
+        }
+        
+        #gameContainer {
+            position: relative;
+            background: #000;
+            border: 2px solid #444;
+        }
+        
+        canvas {
+            display: block;
+        }
+        
+        #controls {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 10px;
+            z-index: 10;
+        }
+        
+        button {
+            padding: 15px 20px;
+            font-size: 16px;
+            background: rgba(255, 255, 255, 0.1);
+            color: white;
+            border: 2px solid #666;
+            border-radius: 5px;
+            cursor: pointer;
+            touch-action: manipulation;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        
+        button:active {
+            background: rgba(255, 255, 255, 0.2);
+        }
+        
+        #startScreen {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.95);
+            color: white;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+            z-index: 30;
+        }
+        
+        #startScreen h1 {
+            font-size: 28px;
+            margin-bottom: 20px;
+            color: #FFD700;
+        }
+        
+        #startScreen .rules {
+            max-width: 280px;
+            text-align: center;
+            margin-bottom: 30px;
+            line-height: 1.6;
+        }
+        
+        #startScreen .rule {
+            margin: 15px 0;
+            padding: 10px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 5px;
+        }
+        
+        #startScreen button {
+            background: #4CAF50;
+            border: none;
+            padding: 15px 40px;
+            font-size: 20px;
+        }
+        
+        #gameOverDialog {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0, 0, 0, 0.9);
+            color: white;
+            padding: 30px;
+            border-radius: 10px;
+            text-align: center;
+            display: none;
+            z-index: 20;
+        }
+        
+        #gameOverDialog h2 {
+            margin: 0 0 20px 0;
+            font-size: 32px;
+        }
+        
+        #gameOverDialog button {
+            background: #4CAF50;
+            border: none;
+            padding: 10px 30px;
+        }
+        
+        #speedIndicator {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            color: white;
+            font-size: 14px;
+            z-index: 10;
+        }
+        
+        .explosion-particle {
+            position: absolute;
+            width: 4px;
+            height: 4px;
+            pointer-events: none;
+            z-index: 15;
+        }
+    </style>
+</head>
+<body>
+    <div id="gameContainer">
+        <canvas id="gameCanvas"></canvas>
+        <div id="speedIndicator">Speed: 1.0x</div>
+        <div id="controls">
+            <button id="leftBtn">←</button>
+            <button id="rotateBtn">↻</button>
+            <button id="rightBtn">→</button>
+            <button id="dropBtn">↓</button>
+        </div>
+        <div id="startScreen">
+            <h1>360° Color Match Tetris</h1>
+            <div class="rules">
+                <div class="rule">
+                    🎮 <strong>Hold to rotate pieces 360°</strong><br>
+                    Pieces tumble with real physics!
+                </div>
+                <div class="rule">
+                    💥 <strong>Same colors explode on touch</strong><br>
+                    Match colors to clear pieces
+                </div>
+                <div class="rule">
+                    ⚡ <strong>Speed increases with explosions</strong><br>
+                    Game gets faster each time!
+                </div>
+            </div>
+            <button onclick="startGame()">START GAME</button>
+        </div>
+        <div id="gameOverDialog">
+            <h2>Game Over</h2>
+            <p>Speed reached: <span id="finalSpeed">1.0</span>x</p>
+            <button onclick="resetGame()">Play Again</button>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
+    <script>
+        // Game configuration
+        const BOARD_WIDTH = 300;
+        const BOARD_HEIGHT = 600;
+        const BLOCK_SIZE = 30;
+        const COLS = 10;
+        const ROWS = 20;
+        const SPAWN_Y = 60;
+        const GAME_OVER_Y = 120; // Lowered from 100 for earlier detection
+        
+        // Physics engine setup
+        const Engine = Matter.Engine;
+        const World = Matter.World;
+        const Bodies = Matter.Bodies;
+        const Body = Matter.Body;
+        const Render = Matter.Render;
+        const Events = Matter.Events;
+        const Composite = Matter.Composite;
+        
+        let engine, world, render;
+        let currentPiece = null;
+        let isGameOver = false;
+        let isRotating = false;
+        let moveDirection = 0;
+        let isDroppingFast = false;
+        let speedMultiplier = 1.0;
+        let hasStarted = false;
+        
+        // Tetromino shapes (separate from colors now)
+        const SHAPES = [
+            { // I piece
+                blocks: [[0, -1.5], [0, -0.5], [0, 0.5], [0, 1.5]]
+            },
+            { // O piece
+                blocks: [[-0.5, -0.5], [0.5, -0.5], [-0.5, 0.5], [0.5, 0.5]]
+            },
+            { // T piece
+                blocks: [[-1, 0], [0, 0], [1, 0], [0, -1]]
+            },
+            { // S piece
+                blocks: [[-1, 0], [0, 0], [0, -1], [1, -1]]
+            },
+            { // Z piece
+                blocks: [[-1, -1], [0, -1], [0, 0], [1, 0]]
+            },
+            { // J piece
+                blocks: [[-1, -1], [-1, 0], [0, 0], [1, 0]]
+            },
+            { // L piece
+                blocks: [[-1, 0], [0, 0], [1, 0], [1, -1]]
+            }
+        ];
+        
+        // Extended color palette - 11 colors for maximum difficulty
+        const COLORS = [
+            '#00FFFF', // Cyan
+            '#FFFF00', // Yellow
+            '#FF00FF', // Magenta
+            '#00FF00', // Lime
+            '#FF0000', // Red
+            '#0000FF', // Blue
+            '#FFA500', // Orange
+            '#FF69B4', // Hot Pink
+            '#9370DB', // Medium Purple
+            '#20B2AA', // Light Sea Green
+            '#DC143C'  // Crimson
+        ];
+        
+        function startGame() {
+            document.getElementById('startScreen').style.display = 'none';
+            hasStarted = true;
+            initGame();
+        }
+        
+        function initGame() {
+            // Create engine with custom gravity
+            engine = Engine.create();
+            world = engine.world;
+            engine.world.gravity.y = 0.3 * speedMultiplier;
+            
+            // Create renderer
+            render = Render.create({
+                element: document.getElementById('gameContainer'),
+                canvas: document.getElementById('gameCanvas'),
+                engine: engine,
+                options: {
+                    width: BOARD_WIDTH,
+                    height: BOARD_HEIGHT,
+                    wireframes: false,
+                    background: '#000'
+                }
+            });
+            
+            // Create walls
+            const wallThickness = 50;
+            const walls = [
+                // Bottom
+                Bodies.rectangle(BOARD_WIDTH/2, BOARD_HEIGHT + wallThickness/2, BOARD_WIDTH, wallThickness, {
+                    isStatic: true,
+                    render: { fillStyle: '#444' },
+                    label: 'wall'
+                }),
+                // Left
+                Bodies.rectangle(-wallThickness/2, BOARD_HEIGHT/2, wallThickness, BOARD_HEIGHT, {
+                    isStatic: true,
+                    render: { fillStyle: '#444' },
+                    label: 'wall'
+                }),
+                // Right
+                Bodies.rectangle(BOARD_WIDTH + wallThickness/2, BOARD_HEIGHT/2, wallThickness, BOARD_HEIGHT, {
+                    isStatic: true,
+                    render: { fillStyle: '#444' },
+                    label: 'wall'
+                })
+            ];
+            
+            World.add(world, walls);
+            
+            // Collision detection
+            Events.on(engine, 'collisionStart', handleCollision);
+            
+            // Start the engine
+            Engine.run(engine);
+            Render.run(render);
+            
+            // Spawn first piece
+            spawnPiece();
+            
+            // Game loop
+            setInterval(gameLoop, 1000/60); // 60 FPS
+        }
+        
+        function createTetromino(shapeIndex, colorIndex, x, y) {
+            const shape = SHAPES[shapeIndex];
+            const color = COLORS[colorIndex];
+            const blocks = [];
+            
+            // Create individual blocks for the tetromino
+            shape.blocks.forEach(([bx, by]) => {
+                const block = Bodies.rectangle(
+                    x + bx * BLOCK_SIZE,
+                    y + by * BLOCK_SIZE,
+                    BLOCK_SIZE - 2,
+                    BLOCK_SIZE - 2,
+                    {
+                        render: { fillStyle: color },
+                        pieceColor: color
+                    }
+                );
+                blocks.push(block);
+            });
+            
+            // Create a compound body from all blocks
+            const tetromino = Body.create({
+                parts: blocks,
+                friction: 0.8,
+                frictionAir: 0.01,
+                restitution: 0.1,
+                pieceColor: color,
+                label: 'tetromino',
+                isCurrentPiece: true
+            });
+            
+            return tetromino;
+        }
+        
+        function spawnPiece() {
+            if (isGameOver) return;
+            
+            const shapeIndex = Math.floor(Math.random() * SHAPES.length);
+            const colorIndex = Math.floor(Math.random() * COLORS.length);
+            currentPiece = createTetromino(shapeIndex, colorIndex, BOARD_WIDTH/2, SPAWN_Y);
+            World.add(world, currentPiece);
+            
+            // Check if piece can spawn without collision (exclude current piece from check)
+            setTimeout(() => {
+                if (currentPiece && currentPiece.position.y < GAME_OVER_Y) {
+                    const bodies = Composite.allBodies(world);
+                    for (let body of bodies) {
+                        if (body !== currentPiece && 
+                            body.position.y < GAME_OVER_Y && 
+                            !body.isStatic && 
+                            body.label === 'tetromino' &&
+                            !body.isCurrentPiece) {
+                            gameOver();
+                            return;
+                        }
+                    }
+                }
+            }, 100);
+        }
+        
+        function handleCollision(event) {
+            const pairs = event.pairs;
+            
+            pairs.forEach(pair => {
+                const bodyA = pair.bodyA;
+                const bodyB = pair.bodyB;
+                
+                // Get the parent bodies (for compound bodies)
+                const parentA = bodyA.parent;
+                const parentB = bodyB.parent;
+                
+                // Check if current piece touched something
+                if (currentPiece && (parentA === currentPiece || parentB === currentPiece)) {
+                    const otherBody = parentA === currentPiece ? bodyB : bodyA;
+                    
+                    // If touched wall or another tetromino, spawn next piece
+                    if (otherBody.label === 'wall' || otherBody.label === 'tetromino' || otherBody.parent.label === 'tetromino') {
+                        if (currentPiece.isCurrentPiece) {
+                            currentPiece.isCurrentPiece = false;
+                            const tempPiece = currentPiece; // Store reference
+                            currentPiece = null;
+                            setTimeout(spawnPiece, 100);
+                        }
+                    }
+                }
+                
+                // Check for color matching between tetrominos (only if game is not over)
+                const tetrominoA = parentA.label === 'tetromino' ? parentA : (bodyA.label === 'tetromino' ? bodyA : null);
+                const tetrominoB = parentB.label === 'tetromino' ? parentB : (bodyB.label === 'tetromino' ? bodyB : null);
+                
+                if (!isGameOver && tetrominoA && tetrominoB && 
+                    tetrominoA !== tetrominoB &&
+                    tetrominoA.pieceColor && tetrominoB.pieceColor && 
+                    tetrominoA.pieceColor === tetrominoB.pieceColor &&
+                    !tetrominoA.isExploding && !tetrominoB.isExploding) {
+                    
+                    // Check if pieces are too high (game should be over)
+                    if (tetrominoA.position.y < GAME_OVER_Y || tetrominoB.position.y < GAME_OVER_Y) {
+                        gameOver();
+                        return;
+                    }
+                    
+                    // Mark for explosion
+                    tetrominoA.isExploding = true;
+                    tetrominoB.isExploding = true;
+                    
+                    // Create explosion effect
+                    createExplosion(tetrominoA.position.x, tetrominoA.position.y, tetrominoA.pieceColor);
+                    createExplosion(tetrominoB.position.x, tetrominoB.position.y, tetrominoB.pieceColor);
+                    
+                    // Remove bodies after a short delay
+                    setTimeout(() => {
+                        World.remove(world, tetrominoA);
+                        World.remove(world, tetrominoB);
+                    }, 100);
+                    
+                    // Increase speed
+                    increaseSpeed();
+                }
+            });
+        }
+        
+        function createExplosion(x, y, color) {
+            const particleCount = 20;
+            const container = document.getElementById('gameContainer');
+            
+            for (let i = 0; i < particleCount; i++) {
+                const particle = document.createElement('div');
+                particle.className = 'explosion-particle';
+                particle.style.backgroundColor = color;
+                particle.style.left = x + 'px';
+                particle.style.top = y + 'px';
+                
+                const angle = (Math.PI * 2 * i) / particleCount;
+                const velocity = 3 + Math.random() * 3;
+                const vx = Math.cos(angle) * velocity;
+                const vy = Math.sin(angle) * velocity;
+                
+                container.appendChild(particle);
+                
+                let px = x;
+                let py = y;
+                let opacity = 1;
+                
+                const animateParticle = () => {
+                    px += vx;
+                    py += vy;
+                    opacity -= 0.02;
+                    
+                    particle.style.left = px + 'px';
+                    particle.style.top = py + 'px';
+                    particle.style.opacity = opacity;
+                    
+                    if (opacity > 0) {
+                        requestAnimationFrame(animateParticle);
+                    } else {
+                        particle.remove();
+                    }
+                };
+                
+                requestAnimationFrame(animateParticle);
+            }
+        }
+        
+        function increaseSpeed() {
+            speedMultiplier += 0.1;
+            engine.world.gravity.y = 0.3 * speedMultiplier;
+            document.getElementById('speedIndicator').textContent = `Speed: ${speedMultiplier.toFixed(1)}x`;
+        }
+        
+        function gameLoop() {
+            if (isGameOver) return;
+            
+            // Check for game over condition (only for settled pieces, not current piece)
+            if (!isGameOver) {
+                const bodies = Composite.allBodies(world);
+                for (let body of bodies) {
+                    if (body.label === 'tetromino' && 
+                        !body.isStatic && 
+                        body !== currentPiece && // Don't check the currently falling piece
+                        !body.isCurrentPiece && // Double check it's not current
+                        body.position.y < GAME_OVER_Y &&
+                        Math.abs(body.velocity.y) < 0.5) { // Only check settled pieces
+                        gameOver();
+                        return;
+                    }
+                }
+            }
+            
+            if (!currentPiece) return;
+            
+            // Apply rotation
+            if (isRotating) {
+                Body.rotate(currentPiece, Math.PI / 180 * speedMultiplier);
+            }
+            
+            // Apply horizontal movement
+            if (moveDirection !== 0) {
+                Body.setVelocity(currentPiece, {
+                    x: moveDirection * 3 * Math.sqrt(speedMultiplier),
+                    y: currentPiece.velocity.y
+                });
+            }
+            
+            // Apply fast drop
+            if (isDroppingFast) {
+                Body.setVelocity(currentPiece, {
+                    x: currentPiece.velocity.x,
+                    y: Math.max(currentPiece.velocity.y, 5 * speedMultiplier)
+                });
+            }
+        }
+        
+        function gameOver() {
+            isGameOver = true;
+            // Stop all controls
+            isRotating = false;
+            moveDirection = 0;
+            isDroppingFast = false;
+            currentPiece = null;
+            
+            document.getElementById('finalSpeed').textContent = speedMultiplier.toFixed(1);
+            document.getElementById('gameOverDialog').style.display = 'block';
+        }
+        
+        function resetGame() {
+            // Clear the world
+            World.clear(world);
+            Engine.clear(engine);
+            
+            // Reset game state
+            isGameOver = false;
+            currentPiece = null;
+            speedMultiplier = 1.0;
+            document.getElementById('speedIndicator').textContent = 'Speed: 1.0x';
+            document.getElementById('gameOverDialog').style.display = 'none';
+            
+            // Clear any remaining particles
+            document.querySelectorAll('.explosion-particle').forEach(p => p.remove());
+            
+            // Reinitialize
+            initGame();
+        }
+        
+        // Touch/Mouse controls
+        let touchStartX = null;
+        
+        // Rotation control
+        const rotateBtn = document.getElementById('rotateBtn');
+        rotateBtn.addEventListener('mousedown', () => { if (!isGameOver) isRotating = true; });
+        rotateBtn.addEventListener('mouseup', () => isRotating = false);
+        rotateBtn.addEventListener('touchstart', (e) => { e.preventDefault(); if (!isGameOver) isRotating = true; });
+        rotateBtn.addEventListener('touchend', (e) => { e.preventDefault(); isRotating = false; });
+        
+        // Left control
+        const leftBtn = document.getElementById('leftBtn');
+        leftBtn.addEventListener('mousedown', () => { if (!isGameOver) moveDirection = -1; });
+        leftBtn.addEventListener('mouseup', () => moveDirection = 0);
+        leftBtn.addEventListener('touchstart', (e) => { e.preventDefault(); if (!isGameOver) moveDirection = -1; });
+        leftBtn.addEventListener('touchend', (e) => { e.preventDefault(); moveDirection = 0; });
+        
+        // Right control
+        const rightBtn = document.getElementById('rightBtn');
+        rightBtn.addEventListener('mousedown', () => { if (!isGameOver) moveDirection = 1; });
+        rightBtn.addEventListener('mouseup', () => moveDirection = 0);
+        rightBtn.addEventListener('touchstart', (e) => { e.preventDefault(); if (!isGameOver) moveDirection = 1; });
+        rightBtn.addEventListener('touchend', (e) => { e.preventDefault(); moveDirection = 0; });
+        
+        // Drop control
+        const dropBtn = document.getElementById('dropBtn');
+        dropBtn.addEventListener('mousedown', () => { if (!isGameOver) isDroppingFast = true; });
+        dropBtn.addEventListener('mouseup', () => isDroppingFast = false);
+        dropBtn.addEventListener('touchstart', (e) => { e.preventDefault(); if (!isGameOver) isDroppingFast = true; });
+        dropBtn.addEventListener('touchend', (e) => { e.preventDefault(); isDroppingFast = false; });
+        
+        // Keyboard controls
+        document.addEventListener('keydown', (e) => {
+            if (isGameOver || !hasStarted) return;
+            switch(e.key) {
+                case 'ArrowLeft': if (!isGameOver) moveDirection = -1; break;
+                case 'ArrowRight': if (!isGameOver) moveDirection = 1; break;
+                case 'ArrowUp': if (!isGameOver) isRotating = true; break;
+                case 'ArrowDown': if (!isGameOver) isDroppingFast = true; break;
+            }
+        });
+        
+        document.addEventListener('keyup', (e) => {
+            switch(e.key) {
+                case 'ArrowLeft':
+                case 'ArrowRight': moveDirection = 0; break;
+                case 'ArrowUp': isRotating = false; break;
+                case 'ArrowDown': isDroppingFast = false; break;
+            }
+        });
+    </script>
+</body>
+</html>
